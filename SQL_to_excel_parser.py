@@ -5,23 +5,14 @@ import tkinter as tk
 from tkinter import filedialog
 from datetime import datetime
 
-# --- !! DEBUG MODE !! ---
-# If the script doesn't work, remove the '#' from the line below, save, and run again.
-# A new sheet named 'DEBUG_RAW_QUERIES' will be created in the output file.
-# DEBUG_MODE = True
-
 def clean_sql_query(query_text):
     """
-    Cleans an individual SQL query string by removing specific lines and comments.
-    This version is more aggressive.
+    Cleans an individual SQL query string by removing the #RUNLOG insert and comments.
+    The PRINT statement is already removed by the parsing logic.
     """
-    # General pattern to remove any INSERT INTO #RUNLOG statement
-    insert_pattern = re.compile(r"INSERT\s+INTO\s+#RUNLOG.*?\)\s*;?\s*\n?", re.IGNORECASE | re.DOTALL)
+    # Remove the INSERT INTO #RUNLOG line
+    insert_pattern = re.compile(r"INSERT\s+INTO\s+#RUNLOG.*\)\s*;?\s*\n?", re.IGNORECASE | re.DOTALL)
     query_text = insert_pattern.sub('', query_text)
-
-    # General pattern to remove any PRINT '[...]' statement
-    print_pattern = re.compile(r"PRINT\s+'[\d\.]+';?\s*\n?", re.IGNORECASE)
-    query_text = print_pattern.sub('', query_text)
 
     # Remove '--' from the beginning of each line
     lines = query_text.split('\n')
@@ -33,42 +24,25 @@ def clean_sql_query(query_text):
 
 def update_excel_with_sql_queries():
     """
-    Reads an SQL file and an Excel file, maps cleaned queries from the SQL file
-    to the Excel file based on a section number, and saves a new Excel file.
+    Prompts user for files, reads SQL and Excel, maps cleaned queries based on PRINT statements,
+    and saves to a user-chosen location.
     """
     root = tk.Tk()
     root.withdraw()
     root.attributes('-topmost', True)
     
     # --- File Selection ---
-    sql_file_path = filedialog.askopenfilename(
-        title="Select SQL File",
-        filetypes=(("SQL files", "*.sql"), ("All files", "*.*"))
-    )
-    if not sql_file_path: 
-        print("No SQL file selected. Exiting...")
-        return
+    sql_file_path = filedialog.askopenfilename(title="Select SQL File", filetypes=(("SQL files", "*.sql"), ("All files", "*.*")))
+    if not sql_file_path: return
     
-    excel_file_path = filedialog.askopenfilename(
-        title="Select Excel File",
-        filetypes=(("Excel files", "*.xlsx *.xls"), ("All files", "*.*"))
-    )
-    if not excel_file_path: 
-        print("No Excel file selected. Exiting...")
-        return
+    excel_file_path = filedialog.askopenfilename(title="Select Excel File", filetypes=(("Excel files", "*.xlsx *.xls"), ("All files", "*.*")))
+    if not excel_file_path: return
     
     default_filename = f"unified_testing_file_with_queries_{datetime.now().strftime('%Y-%m-%d')}.xlsx"
-    output_file_path = filedialog.asksaveasfilename(
-        title="Choose where to save the output file",
-        initialfile=default_filename,
-        defaultextension=".xlsx",
-        filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
-    )
-    if not output_file_path: 
-        print("No save location chosen. Exiting...")
-        return
+    output_file_path = filedialog.asksaveasfilename(title="Choose where to save the output file", initialfile=default_filename, defaultextension=".xlsx", filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")] )
+    if not output_file_path: return
 
-    print("--- Starting Process ---")
+    print("---" + "-" * 17 + " Starting Process " + "-" * 17 + "---")
 
     # --- Read SQL File ---
     try:
@@ -79,39 +53,30 @@ def update_excel_with_sql_queries():
         print(f"ERROR: An error occurred while reading the SQL file: {e}")
         return
 
-    # --- Parse SQL File ---
-    # This pattern now looks for lines starting with '--' and then a number like '1.1.'
-    section_header_pattern = re.compile(r"^\s*--(\d+\.[\d\.]*)")
-    lines = sql_content.split('\n')
+    # --- CORRECTED PARSING LOGIC: Use PRINT as the delimiter ---
+    delimiter_pattern = re.compile(r"PRINT\s+'([\d\.]+)'", re.IGNORECASE)
     
-    raw_queries = {}
-    queries = {}
-    current_section = None
-    current_query_lines = []
-
-    for line in lines:
-        match = section_header_pattern.match(line)
-        if match:
-            if current_section:
-                raw_query_text = '\n'.join(current_query_lines)
-                raw_queries[current_section] = raw_query_text
-                queries[current_section] = clean_sql_query(raw_query_text)
-            
-            current_section = match.group(1).strip().strip('.')
-            current_query_lines = []
-        elif current_section:
-            current_query_lines.append(line)
+    # The split results in: [text_before, section_num1, query1, section_num2, query2, ...]
+    split_content = delimiter_pattern.split(sql_content)
     
-    if current_section:
-        raw_query_text = '\n'.join(current_query_lines)
-        raw_queries[current_section] = raw_query_text
-        queries[current_section] = clean_sql_query(raw_query_text)
-    
-    if not queries:
-        print("ERROR: Could not extract any queries. Please check if the file contains headers like '--1.1.' that start on a new line.")
+    if len(split_content) < 3:
+        print("ERROR: Could not find any queries using the PRINT '[number]' pattern in the SQL file.")
         return
-    
-    print(f"Found and cleaned {len(queries)} queries.")
+
+    # Extract section numbers and the raw queries that follow them
+    section_numbers = split_content[1::2]
+    raw_queries = split_content[2::2]
+
+    queries = {}
+    for i, section_number in enumerate(section_numbers):
+        raw_query = raw_queries[i]
+        # The raw_query no longer contains the PRINT, but it does contain the INSERT and comments.
+        cleaned_query = clean_sql_query(raw_query)
+        
+        if cleaned_query:
+            queries[section_number] = cleaned_query
+
+    print(f"Found and cleaned {len(queries)} queries based on PRINT statements.")
 
     # --- Read and Update Excel File ---
     try:
@@ -123,7 +88,7 @@ def update_excel_with_sql_queries():
         return
 
     if 'סעיף' not in df.columns or 'סקריפט' not in df.columns:
-        print("ERROR: Required columns 'סעיף' and 'סקריפט' not found. Available columns:", df.columns.tolist())
+        print("ERROR: Required columns 'סעיף' and 'סקריפט' not found.")
         return
 
     df['סעיף'] = df['סעיף'].astype(str)
@@ -131,22 +96,14 @@ def update_excel_with_sql_queries():
 
     matches_found = df['סקריפט'].notna().sum()
     print(f"Successfully mapped {matches_found} queries.")
+    if matches_found < len(df):
+        missing_sections = df[df['סקריפט'].isna()]['סעיף'].tolist()
+        print(f"Warning: {len(missing_sections)} sections in Excel had no matching query: {missing_sections}")
 
     # --- Save the Excel File ---
     try:
-        with pd.ExcelWriter(output_file_path, engine='openpyxl') as writer:
-            df.to_excel(writer, sheet_name='Mapped_Queries', index=False)
-            
-            # If debug mode is enabled, write the raw queries to a separate sheet
-            try:
-                if DEBUG_MODE:
-                    print("DEBUG MODE IS ON: Writing raw, uncleaned queries to a separate sheet.")
-                    debug_df = pd.DataFrame(list(raw_queries.items()), columns=['סעיף', 'Raw_Script'])
-                    debug_df.to_excel(writer, sheet_name='DEBUG_RAW_QUERIES', index=False)
-            except NameError:
-                pass # DEBUG_MODE is not defined, do nothing.
-
-        print(f"\n--- Success! ---")
+        df.to_excel(output_file_path, index=False, engine='openpyxl')
+        print(f"\n---" + "-" * 17 + " Success! " + "-" * 17 + "---")
         print(f"The new file has been saved to: {output_file_path}")
     except Exception as e:
         print(f"An error occurred while saving the new Excel file: {e}")
